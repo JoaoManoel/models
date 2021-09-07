@@ -60,7 +60,15 @@ class YAMNet(tf.Module):
     return self._yamnet(waveform)
 
 
-def check_model(model_fn, class_map_path, params):
+class YAMNet_fixed(YAMNet):
+  """Modify the YAMNet wrapper for fixed-size input."""
+
+  @tf.function(input_signature=(tf.TensorSpec(shape=[15600], dtype=tf.float32),))
+  def __call__(self, waveform):
+    return self._yamnet(waveform)
+
+
+def check_model(model_fn, class_map_path, params, waveform_duration=3.0):
   yamnet_classes = yamnet.class_names(class_map_path)
 
   """Applies yamnet_test's sanity checks to an instance of YAMNet."""
@@ -75,19 +83,21 @@ def check_model(model_fn, class_map_path, params):
         'Did not find expected class {} in top {} predictions: {}'.format(
             expected_class_name, top_n, top_n_predictions))
 
+  waveform_samples = int(round(waveform_duration * params.sample_rate))
   clip_test(
-      waveform=np.zeros((int(3 * params.sample_rate),), dtype=np.float32),
+      waveform=np.zeros((waveform_samples,), dtype=np.float32),
       expected_class_name='Silence')
 
   np.random.seed(51773)  # Ensure repeatability.
   clip_test(
       waveform=np.random.uniform(-1.0, +1.0,
-                                 (int(3 * params.sample_rate),)).astype(np.float32),
+                                 (waveform_samples,)).astype(np.float32),
       expected_class_name='White noise')
 
   clip_test(
       waveform=np.sin(2 * np.pi * 440 *
-                      np.arange(0, 3, 1 / params.sample_rate), dtype=np.float32),
+                      np.arange(waveform_samples) / params.sample_rate,
+                      dtype=np.float32),
       expected_class_name='Sine wave')
 
 
@@ -114,7 +124,7 @@ def make_tf2_export(weights_path, export_dir):
   model = tfhub.load(export_dir)
   check_model(model, model.class_map_path(), params)
   log('Done')
-
+  
   # Check export with TF-Hub in TF1.
   log('Checking TF2 SavedModel export in TF1 ...')
   with tf.compat.v1.Graph().as_default(), tf.compat.v1.Session() as sess:
@@ -126,34 +136,54 @@ def make_tf2_export(weights_path, export_dir):
   log('Done')
 
 
-def make_tflite_export(weights_path, export_dir):
+def make_tflite_export_with_length(weights_path, export_dir, input_length=None):
+  """Export a version of the tflite model, potentially with fixed-size input."""
+  if input_length:
+    name_tag = 'fixed-size '
+  else:
+    name_tag = ''
   if os.path.exists(export_dir):
-    log('TF-Lite export already exists in {}, skipping TF-Lite export'.format(
-        export_dir))
+    log('{:s}TF-Lite export already exists in {}, skipping TF-Lite export'.format(
+      name_tag, export_dir))
     return
 
   # Create a TF-Lite compatible Module wrapper around YAMNet.
-  log('Building and checking TF-Lite Module ...')
-  params = yamnet_params.Params(tflite_compatible=True)
-  yamnet = YAMNet(weights_path, params)
-  check_model(yamnet, yamnet.class_map_path(), params)
+  log('Building and checking ' + name_tag + 'TF-Lite Module ...')
+  sample_rate = 16000
+  if input_length:
+    waveform_duration = input_length / sample_rate
+  else:
+    # Indicate that tflite should *not* use a fixed-size input.
+    input_length = None
+    # Default testing duration.
+    waveform_duration = 3.0
+  params = yamnet_params.Params(sample_rate=sample_rate,
+                                tflite_compatible=True,
+                                tflite_waveform_length=input_length)
+  if input_length:
+    yamnet = YAMNet_fixed(weights_path, params)
+  else:
+    yamnet = YAMNet(weights_path, params)
+  check_model(yamnet, yamnet.class_map_path(), params,
+              waveform_duration=waveform_duration)
   log('Done')
 
   # Make TF-Lite SavedModel export.
-  log('Making TF-Lite SavedModel export ...')
+  log('Making ' + name_tag + 'TF-Lite SavedModel export ...')
   saved_model_dir = os.path.join(export_dir, 'saved_model')
   os.makedirs(saved_model_dir)
   tf.saved_model.save(yamnet, saved_model_dir)
   log('Done')
 
   # Check that the export can be loaded and works.
-  log('Checking TF-Lite SavedModel export in TF2 ...')
+  log('Checking ' + name_tag + 'TF-Lite SavedModel export in TF2 ...')
   model = tf.saved_model.load(saved_model_dir)
-  check_model(model, model.class_map_path(), params)
+  check_model(model, model.class_map_path(), params,
+              waveform_duration=waveform_duration)
   log('Done')
 
   # Make a TF-Lite model from the SavedModel.
-  log('Making TF-Lite model ...')
+  log('Making ' + name_tag + 'TF-Lite model ...')
   tflite_converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
   tflite_model = tflite_converter.convert()
   tflite_model_path = os.path.join(export_dir, 'yamnet.tflite')
@@ -162,7 +192,7 @@ def make_tflite_export(weights_path, export_dir):
   log('Done')
 
   # Check the TF-Lite export.
-  log('Checking TF-Lite model ...')
+  log('Checking ' + name_tag + 'TF-Lite model ...')
   interpreter = tf.lite.Interpreter(tflite_model_path)
   audio_input_index = interpreter.get_input_details()[0]['index']
   output_details = interpreter.get_output_details()
@@ -179,7 +209,8 @@ def make_tflite_export(weights_path, export_dir):
     return (interpreter.get_tensor(scores_output_index),
             interpreter.get_tensor(embeddings_output_index),
             interpreter.get_tensor(spectrogram_output_index))
-  check_model(run_model, 'yamnet_class_map.csv', params)
+  check_model(run_model, 'yamnet_class_map.csv', params,
+              waveform_duration=waveform_duration)
   log('Done')
 
   return saved_model_dir
@@ -207,10 +238,15 @@ def main(args):
   make_tf2_export(weights_path, tf2_export_dir)
 
   tflite_export_dir = os.path.join(output_dir, 'tflite')
-  tflite_saved_model_dir = make_tflite_export(weights_path, tflite_export_dir)
+  tflite_saved_model_dir = make_tflite_export_with_length(weights_path, tflite_export_dir)
+
+  tflite_fixed_export_dir = os.path.join(output_dir, 'tflite_fixed')
+  tflite_fixed_saved_model_dir = make_tflite_export_with_length(
+    weights_path, tflite_fixed_export_dir, input_length=15600)
 
   tfjs_export_dir = os.path.join(output_dir, 'tfjs')
   make_tfjs_export(tflite_saved_model_dir, tfjs_export_dir)
+
 
 if __name__ == '__main__':
   main(sys.argv[1:])

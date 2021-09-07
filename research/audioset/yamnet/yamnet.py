@@ -117,8 +117,14 @@ def yamnet_frames_model(params):
     - embeddings: (num_patches, embedding size) matrix of embeddings per time frame
     - log_mel_spectrogram: (num_spectrogram_frames, num_mel_bins) spectrogram feature matrix
   """
-  waveform = layers.Input(batch_shape=(None,), dtype=tf.float32)
-  waveform_padded = features_lib.pad_waveform(waveform, params)
+  if params.tflite_compatible:
+    # Placeholder input has predefined size.
+    waveform = layers.Input(batch_shape=(params.tflite_waveform_length,), dtype=tf.float32)
+    waveform_padded = waveform  # Actually, no padding is needed.
+  else:
+    # Placeholder input is variable-sized, apply padding.
+    waveform = layers.Input(batch_shape=(None,), dtype=tf.float32)
+    waveform_padded = features_lib.pad_waveform(waveform, params)
   log_mel_spectrogram, features = features_lib.waveform_to_log_mel_spectrogram_patches(
       waveform_padded, params)
   predictions, embeddings = yamnet(features, params)

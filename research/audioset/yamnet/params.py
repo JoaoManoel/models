@@ -49,3 +49,4 @@ class Params:
   classifier_activation: str = 'sigmoid'
 
   tflite_compatible: bool = False
+  tflite_waveform_length: int = None
