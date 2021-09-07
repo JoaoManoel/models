@@ -130,7 +130,7 @@ MD_DSP_BLOCK_SPECS = {
         ('invertedbottleneck', 3, 1, 160, 'relu6',
          0.25, 4., None, None, False, False, False),  # fused_conv
         ('tucker', 3, 1, 160, 'relu6',
-         None, None, 0.75, 0.75, None, True, True),
+         None, None, 0.75, 0.75, None, True, False),
         ('invertedbottleneck', 3, 1, 240, 'relu6',
          0.25, 8, None, None, True, False, True),
     ]
@@ -494,7 +494,6 @@ class MobileDet(tf.keras.Model):
             use_sync_bn=self._use_sync_bn,
             norm_momentum=self._norm_momentum,
             norm_epsilon=self._norm_epsilon,
-            stochastic_depth_drop_rate=self._stochastic_depth_drop_rate,
             divisible_by=self._get_divisible_by()
         )(net)
 
@@ -516,7 +515,6 @@ class MobileDet(tf.keras.Model):
             use_sync_bn=self._use_sync_bn,
             norm_momentum=self._norm_momentum,
             norm_epsilon=self._norm_epsilon,
-            stochastic_depth_drop_rate=self._stochastic_depth_drop_rate,
             divisible_by=self._get_divisible_by()
         )(net)
 
@@ -561,12 +559,13 @@ class MobileDet(tf.keras.Model):
 @factory.register_backbone_builder('mobiledet')
 def build_mobiledet(
     input_specs: tf.keras.layers.InputSpec,
-    model_config: hyperparams.Config,
-    l2_regularizer: tf.keras.regularizers.Regularizer = None) -> tf.keras.Model:
+    backbone_config: hyperparams.Config,
+    norm_activation_config: hyperparams.Config,
+    l2_regularizer: Optional[tf.keras.regularizers.Regularizer] = None
+) -> tf.keras.Model:
   """Builds MobileDet backbone from a config."""
-  backbone_type = model_config.backbone.type
-  backbone_cfg = model_config.backbone.get()
-  norm_activation_config = model_config.norm_activation
+  backbone_type = backbone_config.type
+  backbone_cfg = backbone_config.get()
   assert backbone_type == 'mobiledet', (f'Inconsistent backbone type '
                                         f'{backbone_type}')
 
